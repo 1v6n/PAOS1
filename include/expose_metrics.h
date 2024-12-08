@@ -29,6 +29,10 @@
 #include <string.h>
 #include <unistd.h>
 
+#define FIFO_FIRST_FIT "/tmp/fragmentation_fifo_FIRST_FIT"
+#define FIFO_BEST_FIT "/tmp/fragmentation_fifo_BEST_FIT"
+#define FIFO_WORST_FIT "/tmp/fragmentation_fifo_WORST_FIT"
+
 typedef struct
 {
     const char* name;
@@ -138,6 +142,12 @@ void update_context_switches_metric(void);
  * @brief Updates the disk stats metrics.
  */
 void update_disk_stats_metrics(void);
+
+void update_fragmentation_first_fit_metric(void);
+void update_fragmentation_best_fit_metric(void);
+void update_fragmentation_worst_fit_metric(void);
+
+double read_number_from_fifo(const char* fifo_path);
 
 /**
  * @brief Prints all available metrics with their names and descriptions.

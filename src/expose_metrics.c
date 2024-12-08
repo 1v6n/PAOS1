@@ -47,6 +47,11 @@ static prom_gauge_t* tx_bytes_metric;  /**< Prometheus gauge for tracking the to
 static prom_gauge_t* rx_errors_metric; /**< Prometheus gauge for tracking the total receive errors in the network. */
 static prom_gauge_t* tx_errors_metric; /**< Prometheus gauge for tracking the total transmit errors in the network. */
 static prom_gauge_t* dropped_packets_metric; /**< Prometheus gauge for tracking the total number of dropped packets. */
+static prom_gauge_t*
+    fragmentation_first_fit_metric;                 /**< Prometheus gauge for tracking fragmentation using FIRST_FIT. */
+static prom_gauge_t* fragmentation_best_fit_metric; /**< Prometheus gauge for tracking fragmentation using BEST_FIT. */
+static prom_gauge_t*
+    fragmentation_worst_fit_metric; /**< Prometheus gauge for tracking fragmentation using WORST_FIT. */
 
 MetricInfo all_metrics[] = {
     {"rx_bytes_total", "Total received bytes", &rx_bytes_metric, &update_network_traffic_metric},
@@ -75,8 +80,14 @@ MetricInfo all_metrics[] = {
     {"suspended_processes", "Suspended processes", &suspended_processes_metric, &update_process_states_gauge},
     {"ready_processes", "Ready processes", &ready_processes_metric, &update_process_states_gauge},
     {"blocked_processes", "Blocked processes", &blocked_processes_metric, &update_process_states_gauge},
-    {NULL, NULL, NULL} // Sentinel value to mark the end of the array
-};
+    {"fragmentation_first_fit", "Fragmentation using FIRST_FIT", &fragmentation_first_fit_metric,
+     &update_fragmentation_first_fit_metric},
+    {"fragmentation_best_fit", "Fragmentation using BEST_FIT", &fragmentation_best_fit_metric,
+     &update_fragmentation_best_fit_metric},
+    {"fragmentation_worst_fit", "Fragmentation using WORST_FIT", &fragmentation_worst_fit_metric,
+     &update_fragmentation_worst_fit_metric},
+    {NULL, NULL, NULL}};
+
 void update_gauge(prom_gauge_t* metric, double value)
 {
     pthread_mutex_lock(&lock);
@@ -274,24 +285,116 @@ void update_disk_stats_metrics(void)
     }
 }
 
+double read_number_from_fifo(const char* fifo_path)
+{
+    FILE* fifo_file = fopen(fifo_path, "r");
+    if (fifo_file == NULL)
+    {
+        perror("fopen");
+        return -1.0;
+    }
+
+    double number;
+    if (fscanf(fifo_file, "%lf", &number) != 1)
+    {
+        perror("fscanf");
+        fclose(fifo_file);
+        return -1.0;
+    }
+
+    fclose(fifo_file);
+    return number;
+}
+
+#define NUM_SEEDS 10
+const unsigned long seeds[NUM_SEEDS] = {2676844163, 1234567890, 987654321,  192837465,  1029384756,
+                                        5647382910, 1122334455, 5566778899, 9988776655, 4433221100};
+
+int run_main_with_seed(const char* fit_type, unsigned long seed)
+{
+    char command[BUFFER_SIZE];
+    snprintf(command, sizeof(command), "./main -s %lu -p %s > /dev/null 2>&1 &", seed, fit_type);
+
+    int ret = system(command);
+    if (ret == -1)
+    {
+        perror("system");
+        return -1;
+    }
+    else if (ret != 0)
+    {
+        fprintf(stderr, "Command failed with exit code %d\n", WEXITSTATUS(ret));
+        return -1;
+    }
+
+    return 0;
+}
+
+void update_fragmentation_first_fit_metric(void)
+{
+    for (int i = 0; i < NUM_SEEDS; i++)
+    {
+        if (run_main_with_seed("FIRST_FIT", seeds[i]) != 0)
+        {
+            return;
+        }
+
+        double first_fit = read_number_from_fifo(FIFO_FIRST_FIT);
+        if (first_fit != -1)
+        {
+            update_gauge(fragmentation_first_fit_metric, first_fit);
+        }
+    }
+}
+
+void update_fragmentation_best_fit_metric(void)
+{
+    for (int i = 0; i < NUM_SEEDS; i++)
+    {
+        if (run_main_with_seed("BEST_FIT", seeds[i]) != 0)
+        {
+            return;
+        }
+
+        double best_fit = read_number_from_fifo(FIFO_BEST_FIT);
+        if (best_fit != -1)
+        {
+            update_gauge(fragmentation_best_fit_metric, best_fit);
+        }
+    }
+}
+
+void update_fragmentation_worst_fit_metric(void)
+{
+    for (int i = 0; i < NUM_SEEDS; i++)
+    {
+        if (run_main_with_seed("WORST_FIT", seeds[i]) != 0)
+        {
+            return;
+        }
+
+        double worst_fit = read_number_from_fifo(FIFO_WORST_FIT);
+        if (worst_fit != -1)
+        {
+            update_gauge(fragmentation_worst_fit_metric, worst_fit);
+        }
+    }
+}
+
 void* expose_metrics(const void* arg)
 {
     (void)arg;
-
     promhttp_set_active_collector_registry(NULL);
-
     struct MHD_Daemon* daemon = promhttp_start_daemon(MHD_USE_SELECT_INTERNALLY, 8000, NULL, NULL);
     if (daemon == NULL)
     {
         fprintf(stderr, "Error starting HTTP server\n");
         return NULL;
     }
-
     while (keep_running)
     {
         sleep(1);
     }
-
     MHD_stop_daemon(daemon);
     return NULL;
 }
@@ -302,18 +405,13 @@ void init_metrics(const char* selected_metrics[], size_t num_metrics)
     {
         fprintf(stderr, "Error initializing mutex\n");
     }
-
     if (prom_collector_registry_default_init() != 0)
     {
         fprintf(stderr, "Error initializing Prometheus registry\n");
     }
-
-    // Iterate over the selected metrics array and create/register the metrics
     for (size_t i = 0; i < num_metrics; i++)
     {
         const char* metric_name = selected_metrics[i];
-
-        // Find the metric in the all_metrics array
         for (MetricInfo* info = all_metrics; info->name != NULL; info++)
         {
             if (strcmp(metric_name, info->name) == 0)
@@ -334,12 +432,10 @@ void show_available_metrics(void)
         perror("fopen");
         return;
     }
-
     for (MetricInfo* info = all_metrics; info->name != NULL; info++)
     {
         fprintf(file, "Metric: %s\n", info->name);
     }
-
     fclose(file);
 }
 

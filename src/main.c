@@ -8,16 +8,26 @@
 
 #include "expose_metrics.h"
 #include "metrics.h"
+#include <ctype.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+
 #define FIFO_PATH "/tmp/monitor_fifo"
 #define BUFFER_SIZE 256
 #define MAX_METRICS 10
 #define STATUS_FILE "/tmp/monitor_status"
 
-#include <ctype.h>
-#include <fcntl.h>
-#include <sys/stat.h>
-
-// Function to trim leading and trailing whitespace
+/**
+ * @brief Trims leading and trailing whitespace from a string.
+ *
+ * This function removes any leading and trailing whitespace characters
+ * from the input string. It modifies the original string and returns
+ * a pointer to the trimmed string.
+ *
+ * @param str The input string to be trimmed. It must be a null-terminated string.
+ * @return A pointer to the trimmed string. If the input string is empty or contains
+ *         only whitespace characters, a pointer to the null character is returned.
+ */
 char* trim_whitespace(char* str)
 {
     char* end;
@@ -37,7 +47,15 @@ char* trim_whitespace(char* str)
     return str;
 }
 
-// Function to update the status file
+/**
+ * @brief Updates the status by writing it to a file.
+ *
+ * This function opens the file specified by STATUS_FILE in write mode,
+ * writes the provided status string to the file, and then closes the file.
+ * If the file cannot be opened, an error message is printed to stderr.
+ *
+ * @param status The status string to be written to the file.
+ */
 void update_status(const char* status)
 {
     FILE* file = fopen(STATUS_FILE, "w");
@@ -57,7 +75,7 @@ void update_status(const char* status)
  *
  * @return A pointer to a string representing the home directory path of the current user. Returns `NULL` on failure.
  */
-char* get_home_directory()
+char* get_home_directory(void)
 {
     struct passwd* pw = getpwuid(getuid());
     return pw ? pw->pw_dir : NULL;
@@ -69,7 +87,7 @@ char* get_home_directory()
  * Constructs the command to launch the Grafana server with the appropriate configuration and home path.
  * The server is started as a background process using the `system()` function.
  */
-void start_grafana()
+void start_grafana(void)
 {
     char* home_dir = get_home_directory();
     if (home_dir == NULL)
@@ -99,7 +117,7 @@ void start_grafana()
  *
  * This function uses the `system()` call to start the Prometheus server in the background.
  */
-void start_prometheus()
+void start_prometheus(void)
 {
     const char* home_dir = getenv("HOME");
     if (home_dir == NULL)
@@ -134,6 +152,17 @@ void create_threads(void)
     }
 }
 
+/**
+ * @brief Starts the metrics monitoring process.
+ *
+ * This function initializes the metrics monitoring by setting up the necessary
+ * update functions for each selected metric and creating the required threads.
+ * It then enters an infinite loop where it periodically calls the update functions
+ * for each metric.
+ *
+ * @param selected_metrics An array of strings representing the names of the metrics to monitor.
+ * @param num_metrics The number of metrics to monitor.
+ */
 void start_metrics_monitoring(const char* selected_metrics[], size_t num_metrics)
 {
     init_metrics(selected_metrics, num_metrics);
@@ -145,7 +174,7 @@ void start_metrics_monitoring(const char* selected_metrics[], size_t num_metrics
     for (size_t i = 0; i < num_metrics; i++)
     {
         const char* metric_name = selected_metrics[i];
-        update_functions[i] = NULL; // Initialize to NULL
+        update_functions[i] = NULL;
 
         printf("Processing metric: '%s'\n", metric_name);
 
@@ -222,7 +251,7 @@ size_t parse_metrics(const char* input, const char* output[], size_t max_metrics
  * This function opens and reads from a FIFO. The read data is parsed into
  * an array of metric names and used to start metric monitoring.
  */
-void start_monitoring_from_fifo()
+void start_monitoring_from_fifo(void)
 {
     if (mkfifo(FIFO_PATH, 0666) == -1 && errno != EEXIST)
     {
@@ -246,7 +275,6 @@ void start_monitoring_from_fifo()
         const char* selected_metrics[MAX_METRICS];
         size_t num_metrics = parse_metrics(buffer, selected_metrics, MAX_METRICS);
 
-        // Check if the first value is "1"
         if (num_metrics > 0 && strcmp(selected_metrics[0], "1") == 0)
         {
             show_available_metrics();
@@ -278,6 +306,31 @@ void start_monitoring_from_fifo()
 }
 
 /**
+ * @brief Runs an executable with the given command.
+ *
+ * This function uses the `system()` call to run the specified command.
+ * It prints an error message if the command fails to execute.
+ *
+ * @param command The command to run the executable.
+ * @return Returns 0 on success, or -1 on failure.
+ */
+int run_executable(const char* command)
+{
+    int ret = system(command);
+    if (ret == -1)
+    {
+        perror("system");
+        return -1;
+    }
+    else if (ret != 0)
+    {
+        fprintf(stderr, "Command failed with exit code %d\n", WEXITSTATUS(ret));
+        return -1;
+    }
+    return 0;
+}
+
+/**
  * @brief Main function of the system.
  *
  * The main function is responsible for starting both Prometheus and Grafana servers.
@@ -290,9 +343,9 @@ void start_monitoring_from_fifo()
  */
 int main(int argc, char* argv[])
 {
-    // start_grafana();
-    // start_prometheus();
-    // show_available_metrics();
+    start_grafana();
+    tart_prometheus();
+    show_available_metrics();
     update_status("Starting monitoring from FIFO");
     start_monitoring_from_fifo();
     return EXIT_SUCCESS;

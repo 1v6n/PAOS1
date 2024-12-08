@@ -391,7 +391,6 @@ DiskStats get_disk_stats()
             io_time += it;
         }
     }
-
     fclose(fp);
     return (DiskStats){io_time, writes_completed, reads_completed};
 }
